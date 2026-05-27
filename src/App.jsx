@@ -1,7 +1,11 @@
 import { useState, useEffect, useMemo } from "react";
-import { db } from "./firebase";
+import { db, auth } from "./firebase";
 import { doc, getDoc, setDoc } from "firebase/firestore";
+import { signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from "firebase/auth";
 import { runSeedIfNeeded } from "./seed";
+
+const ALLOWED_EMAIL = "alvarezrsa@gmail.com";
+const provider = new GoogleAuthProvider();
 
 const PAYMENT_METHODS = ["Littio (USD→COP)", "Bancolombia (COP)", "Visa", "Sistecredito", "Tuya"];
 const CATEGORIES = ["Hogar","Familia","Salud","Movilidad","Extras","Alimentacion","Suscripciones","Deudas","Cuidado Personal","Bienestar","Work","Educacion","Mascotas","Sin categoría"];
@@ -79,7 +83,27 @@ function Modal({title,onClose,children}){
   );
 }
 
+function LoginScreen({ onLogin, error }) {
+  return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f9fafb",fontFamily:"system-ui,sans-serif"}}>
+      <div style={{background:"white",borderRadius:16,border:"1px solid #e5e7eb",padding:"2.5rem 2rem",width:340,textAlign:"center",boxShadow:"0 4px 24px rgba(0,0,0,0.07)"}}>
+        <div style={{fontSize:36,marginBottom:8}}>💸</div>
+        <h1 style={{fontSize:22,fontWeight:600,margin:"0 0 4px"}}>Sofia Gastos</h1>
+        <p style={{fontSize:13,color:"#6b7280",margin:"0 0 28px"}}>Tu app personal de gastos</p>
+        <button onClick={onLogin} style={{width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:10,padding:"11px 16px",border:"1px solid #e5e7eb",borderRadius:10,background:"white",cursor:"pointer",fontSize:14,fontWeight:500,color:"#111"}}>
+          <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.08 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-3.59-13.46-8.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+          Continuar con Google
+        </button>
+        {error && <p style={{marginTop:16,fontSize:12,color:"#dc2626"}}>{error}</p>}
+        <p style={{marginTop:20,fontSize:11,color:"#d1d5db"}}>Solo acceso autorizado</p>
+      </div>
+    </div>
+  );
+}
+
 export default function App(){
+  const [user, setUser] = useState(undefined);
+  const [authError, setAuthError] = useState("");
   const [records, setRecords] = useState([]);
   const [expenseDefs, setExpenseDefs] = useState(DEFAULT_EXPENSES);
   const [income, setIncome] = useState([]);
@@ -93,12 +117,18 @@ export default function App(){
   const [filterPM, setFilterPM] = useState("all");
   const [search, setSearch] = useState("");
   const [saving, setSaving] = useState(false);
-  const [loginEmail, setLoginEmail] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
-  const [loginError, setLoginError] = useState("");
-  const [loginLoading, setLoginLoading] = useState(false);
 
   useEffect(()=>{
+    const unsub = onAuthStateChanged(auth, (u)=>{
+      if(u && u.email === ALLOWED_EMAIL){ setUser(u); setAuthError(""); }
+      else if(u){ signOut(auth); setUser(null); setAuthError("Acceso no autorizado para "+u.email); }
+      else { setUser(null); }
+    });
+    return unsub;
+  },[]);
+
+  useEffect(()=>{
+    if(!user) return;
     (async()=>{
       await runSeedIfNeeded();
       const r = await fsGet("records"); if(r) setRecords(JSON.parse(r));
@@ -107,7 +137,15 @@ export default function App(){
       const rt = await fsGet("rate"); if(rt) setRate(parseFloat(rt)||3630);
       setLoading(false);
     })();
-  },[]);
+  },[user]);
+
+  const handleLogin = async () => {
+    setAuthError("");
+    try { await signInWithPopup(auth, provider); }
+    catch(e) { setAuthError("Error al iniciar sesión. Intenta de nuevo."); }
+  };
+
+  const handleLogout = async () => { await signOut(auth); setUser(null); };
 
   const saveAll = async(recs,defs,inc,rt)=>{
     setSaving(true);
@@ -125,10 +163,7 @@ export default function App(){
     if(!el) return;
     import("html-to-image").then(({toPng})=>{
       toPng(el,{backgroundColor:"#ffffff",pixelRatio:2}).then(dataUrl=>{
-        const a=document.createElement("a");
-        a.download=filename+".png";
-        a.href=dataUrl;
-        a.click();
+        const a=document.createElement("a"); a.download=filename+".png"; a.href=dataUrl; a.click();
       });
     });
   };
@@ -217,7 +252,10 @@ export default function App(){
     setExpenseDefs(upd); await saveAll(undefined,upd); setModal(null);
   };
 
-  if(loading) return <div style={{padding:"2rem",color:"#6b7280",fontFamily:"system-ui"}}>Cargando...</div>;
+  // ── Guards AFTER all hooks ──
+  if(user === undefined) return <div style={{padding:"2rem",color:"#6b7280",fontFamily:"system-ui"}}>Cargando...</div>;
+  if(user === null) return <LoginScreen onLogin={handleLogin} error={authError}/>;
+  if(loading) return <div style={{padding:"2rem",color:"#6b7280",fontFamily:"system-ui"}}>Cargando datos...</div>;
 
   const s={
     card:{background:"white",border:"1px solid #e5e7eb",borderRadius:12,padding:"1rem"},
@@ -242,6 +280,8 @@ export default function App(){
         ))}
         <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
           {saving&&<span style={{fontSize:11,color:"#9ca3af"}}>Guardando...</span>}
+          <span style={{fontSize:11,color:"#9ca3af"}}>{user.displayName?.split(" ")[0]}</span>
+          <button onClick={handleLogout} style={{...s.btn,fontSize:11,padding:"4px 10px",color:"#6b7280"}}>Salir</button>
           <button onClick={openAddIncome} style={s.btnSuccess}>+ Income</button>
           <button onClick={openAdd} style={s.btnPrimary}>+ Expense</button>
         </div>
@@ -452,8 +492,6 @@ export default function App(){
               {allMonths.map(m=><option key={m} value={m}>{m}</option>)}
             </select>
           </div>
-
-          {/* LITTIO CHART */}
           {["Littio (USD→COP)","Bancolombia (COP)","Visa","Sistecredito","Tuya"].map(pm=>{
             const pmRecords = monthRecords.filter(r=>r.paymentMethod===pm);
             if(!pmRecords.length) return null;
@@ -486,7 +524,6 @@ export default function App(){
                       <div style={{background:"#f3f4f6",borderRadius:3,height:7}}>
                         <div style={{background:PM_COLORS[pm]||CAT_COLORS[cat]||"#888",width:pct+"%",height:"100%",borderRadius:3,opacity:0.75}}/>
                       </div>
-                      {/* expense list */}
                       <div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:3}}>
                         {pmRecords.filter(r=>(r.category||"Sin categoría")===cat).map(r=>(
                           <span key={r.id} style={{fontSize:10,padding:"1px 6px",borderRadius:99,background:"#f9fafb",border:"1px solid #e5e7eb",color:"#6b7280"}}>
@@ -500,8 +537,6 @@ export default function App(){
               </div>
             );
           })}
-
-          {/* 6-month trend */}
           <div id="chart-trend" style={{...s.card,marginBottom:"1rem"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
               <div style={{fontSize:13,fontWeight:500}}>Ingresos vs gastos — últimos 6 meses</div>
